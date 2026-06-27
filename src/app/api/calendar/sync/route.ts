@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
       const event = await calendar.events.insert({
         calendarId: "primary",
         requestBody: {
-          summary: `⚡ ${task.title}`,
+          summary: `${task.title}`,
           description: `Priority: ${task.priority}\n${task.reason || ""}`,
           start: { dateTime: startTime.toISOString() },
           end: { dateTime: deadlineDate.toISOString() },
