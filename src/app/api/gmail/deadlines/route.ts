@@ -9,7 +9,6 @@ export async function POST(req: NextRequest) {
     auth.setCredentials({ access_token: accessToken });
     const gmail = google.gmail({ version: "v1", auth });
 
-    // Search for deadline-related emails
     const response = await gmail.users.messages.list({
       userId: "me",
       q: "subject:(deadline OR due OR submit OR urgent OR reminder) newer_than:7d",
@@ -23,8 +22,7 @@ export async function POST(req: NextRequest) {
       const detail = await gmail.users.messages.get({
         userId: "me",
         id: msg.id!,
-        format: "metadata",
-        metadataHeaders: ["Subject", "From", "Date"],
+        format: "full",
       });
 
       const headers = detail.data.payload?.headers || [];
@@ -32,7 +30,29 @@ export async function POST(req: NextRequest) {
       const from = headers.find(h => h.name === "From")?.value || "";
       const date = headers.find(h => h.name === "Date")?.value || "";
 
-      deadlines.push({ subject, from, date, id: msg.id });
+      // Extract email body text
+      let bodyText = "";
+      const extractText = (part: { mimeType?: string | null; body?: { data?: string | null }; parts?: unknown[] }): void => {
+        if (part.mimeType === "text/plain" && part.body?.data) {
+          bodyText += Buffer.from(part.body.data, "base64").toString("utf-8");
+        }
+        if (part.parts) {
+          for (const p of part.parts) {
+            extractText(p as { mimeType?: string | null; body?: { data?: string | null }; parts?: unknown[] });
+          }
+        }
+      };
+      if (detail.data.payload) {
+        extractText(detail.data.payload);
+      }
+
+      deadlines.push({ 
+        subject, 
+        from, 
+        date, 
+        id: msg.id,
+        bodySnippet: bodyText.substring(0, 1000) || detail.data.snippet || ""
+      });
     }
 
     return NextResponse.json({ deadlines });

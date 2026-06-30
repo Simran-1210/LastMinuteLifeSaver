@@ -16,6 +16,7 @@ import {
   doc,
   query,
   where,
+  updateDoc,
 } from "firebase/firestore";
 import { useRouter } from "next/navigation";
 
@@ -27,6 +28,7 @@ interface Task {
   reason?: string;
   suggestedTime?: string;
   userId: string;
+  calendarEventId?: string;
 }
 
 const priorityConfig = {
@@ -137,15 +139,37 @@ export default function Dashboard() {
       const accessToken = (
         result as unknown as { _tokenResponse: { oauthAccessToken: string } }
       )._tokenResponse?.oauthAccessToken;
+
       const res = await fetch("/api/calendar/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tasks, accessToken }),
       });
       const data = await res.json();
-      if (data.success)
-        alert(`${data.events.length} tasks added to Google Calendar!`);
-      else alert("Calendar sync failed: " + data.error);
+
+      if (data.success) {
+        const updatedTasks = [...tasks];
+        for (const event of data.events) {
+          const taskIndex = updatedTasks.findIndex(
+            (t) => t.id === event.taskId,
+          );
+          if (taskIndex !== -1) {
+            updatedTasks[taskIndex] = {
+              ...updatedTasks[taskIndex],
+              calendarEventId: event.eventId,
+            };
+            await updateDoc(doc(db, "tasks", event.taskId), {
+              calendarEventId: event.eventId,
+            });
+          }
+        }
+        setTasks(updatedTasks);
+        alert(
+          ` ${data.events.length} tasks added to Calendar!${data.skipped > 0 ? ` (${data.skipped} already synced, skipped)` : ""}`,
+        );
+      } else {
+        alert("Calendar sync failed: " + data.error);
+      }
     } catch (err) {
       console.error(err);
       alert("Calendar sync failed.");
@@ -159,23 +183,46 @@ export default function Dashboard() {
       const accessToken = (
         result as unknown as { _tokenResponse: { oauthAccessToken: string } }
       )._tokenResponse?.oauthAccessToken;
+
       const res = await fetch("/api/gmail/deadlines", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ accessToken }),
       });
       const data = await res.json();
+
       if (data.deadlines?.length > 0 && user) {
+        // Ask Gemini to extract real deadlines from email content
+        const extractRes = await fetch("/api/ai/extract-deadline", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ emails: data.deadlines }),
+        });
+        const extracted = await extractRes.json();
+        const extractedArray = Array.isArray(extracted) ? extracted : [];
+
         const newTasks: Task[] = [];
         for (const email of data.deadlines) {
-          const tomorrow = new Date();
-          tomorrow.setDate(tomorrow.getDate() + 1);
-          tomorrow.setHours(23, 59, 0, 0);
+          const match = extractedArray.find(
+            (e: { id: string }) => e.id === email.id,
+          );
+
+          let deadlineISO: string;
+          if (match?.extractedDeadline) {
+            deadlineISO = match.extractedDeadline;
+          } else {
+            // Fallback: tomorrow end of day if no date found
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            tomorrow.setHours(23, 59, 0, 0);
+            deadlineISO = tomorrow.toISOString();
+          }
+
           const newTask: Task = {
             title: email.subject.substring(0, 60),
-            deadline: tomorrow.toISOString(),
+            deadline: deadlineISO,
             priority: "high",
-            reason: `Auto-detected from email by ${email.from.split("<")[0].trim()}`,
+            reason: `Auto-detected from email by ${email.from.split("<")[0].trim()}${match?.confidence === "low" ? " (estimated date)" : ""}`,
             userId: user.uid,
           };
           const docRef = await addDoc(collection(db, "tasks"), newTask);
@@ -204,7 +251,6 @@ export default function Dashboard() {
 
   return (
     <main className="min-h-screen bg-slate-900 text-white">
-      {/* Header */}
       <div className="border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-sm sticky top-0 z-10">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -230,7 +276,6 @@ export default function Dashboard() {
       </div>
 
       <div className="max-w-4xl mx-auto px-6 py-8">
-        {/* Stats Row */}
         <div className="grid grid-cols-3 gap-4 mb-8">
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-4 text-center">
             <div className="text-3xl font-bold text-white">{tasks.length}</div>
@@ -248,7 +293,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Add Task */}
         <div className="bg-slate-800/50 border border-slate-700/50 rounded-2xl p-5 mb-6">
           <h2 className="text-sm font-medium text-slate-300 mb-3">
             Add a task
@@ -278,7 +322,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* AI Action Buttons */}
         {tasks.length > 0 && (
           <div className="grid grid-cols-1 gap-3 mb-6 sm:grid-cols-3">
             <button
@@ -319,7 +362,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Task List */}
         <div className="space-y-3">
           {tasks.map((task) => {
             const config = priorityConfig[task.priority];
@@ -331,7 +373,7 @@ export default function Dashboard() {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1.5">
+                    <div className="flex items-center gap-2 mb-1.5 flex-wrap">
                       <div
                         className={`w-2 h-2 rounded-full ${config.dot}`}
                       ></div>
@@ -343,6 +385,11 @@ export default function Dashboard() {
                       {isOverdue && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-400 font-medium">
                           overdue
+                        </span>
+                      )}
+                      {task.calendarEventId && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-green-500/20 text-green-400 font-medium">
+                          📅 synced
                         </span>
                       )}
                       <h3 className="font-medium text-white text-sm">

@@ -3,27 +3,36 @@ import { google } from "googleapis";
 
 export async function POST(req: NextRequest) {
   const { tasks, accessToken } = await req.json();
+
   try {
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: accessToken });
     const calendar = google.calendar({ version: "v3", auth });
+
     const results = [];
+    const skipped = [];
 
     for (const task of tasks) {
+      // Skip if already synced to calendar
+      if (task.calendarEventId) {
+        skipped.push(task.id);
+        continue;
+      }
+
       const deadlineDate = new Date(task.deadline);
-      const endTime = new Date(deadlineDate.getTime() + 60 * 60 * 1000); // ✅ CHANGED: +1hr instead of -1hr
+      const startTime = new Date(deadlineDate.getTime() - 60 * 60 * 1000);
 
       const event = await calendar.events.insert({
         calendarId: "primary",
         requestBody: {
           summary: task.title,
-          description: `Priority: ${task.priority}\n${task.reason || ""}`,
-          start: { 
-            dateTime: deadlineDate.toISOString(), // ✅ CHANGED: was startTime, now deadlineDate
+          description: `Priority: ${task.priority}\n${task.reason || ""}\nCreated by Last-Minute Life Saver`,
+          start: {
+            dateTime: startTime.toISOString(),
             timeZone: "Asia/Kolkata"
           },
-          end: { 
-            dateTime: endTime.toISOString(),      // ✅ CHANGED: was deadlineDate, now endTime
+          end: {
+            dateTime: deadlineDate.toISOString(),
             timeZone: "Asia/Kolkata"
           },
           reminders: {
@@ -38,10 +47,14 @@ export async function POST(req: NextRequest) {
                    task.priority === "medium" ? "5" : "2",
         },
       });
-      results.push(event.data);
+      results.push({ taskId: task.id, eventId: event.data.id });
     }
 
-    return NextResponse.json({ success: true, events: results });
+    return NextResponse.json({ 
+      success: true, 
+      events: results,
+      skipped: skipped.length
+    });
   } catch (err) {
     console.error("Calendar error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });

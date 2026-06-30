@@ -29,22 +29,35 @@ Return ONLY a JSON array. No markdown. No backticks. Just the array.`;
 
   } catch (err: unknown) {
     const message = String(err);
-    
-    // If quota exceeded, return smart mock response
+
     if (message.includes("429") || message.includes("quota")) {
-      const mockPrioritized = tasks.map((task: {id: string, title: string, deadline: string}) => {
-        const hoursUntilDeadline = (new Date(task.deadline).getTime() - Date.now()) / 3600000;
+      const now = new Date();
+      const mockPrioritized = tasks.map((task: { id: string, title: string, deadline: string }) => {
+        const deadlineMs = new Date(task.deadline).getTime();
+        const nowMs = now.getTime();
+        const hoursUntilDeadline = (deadlineMs - nowMs) / 3600000;
+
         let priority: string;
-        if (hoursUntilDeadline < 2) priority = "urgent";
+        if (hoursUntilDeadline < 0) priority = "urgent";
+        else if (hoursUntilDeadline < 2) priority = "urgent";
         else if (hoursUntilDeadline < 24) priority = "high";
         else if (hoursUntilDeadline < 72) priority = "medium";
         else priority = "low";
 
+        const absHours = Math.abs(Math.round(hoursUntilDeadline));
+        const reason = hoursUntilDeadline < 0
+          ? `Overdue by ${absHours} hours.`
+          : `Deadline is ${absHours} hours away.`;
+
         return {
           id: task.id,
           priority,
-          reason: `Deadline is ${Math.round(hoursUntilDeadline)} hours away.`,
-          suggestedTime: hoursUntilDeadline < 24 ? "As soon as possible" : "Morning 9-11am"
+          reason,
+          suggestedTime: hoursUntilDeadline < 0
+            ? "Complete immediately"
+            : hoursUntilDeadline < 24
+            ? "As soon as possible"
+            : "Morning 9-11am"
         };
       });
       return NextResponse.json(mockPrioritized);
